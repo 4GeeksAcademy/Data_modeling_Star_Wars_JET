@@ -2,7 +2,15 @@ from __future__ import annotations
 from typing import Optional, Literal
 
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import String, Boolean, ForeignKey, CheckConstraint, Enum, UniqueConstraint, Integer
+from sqlalchemy import (
+    String,
+    Boolean,
+    ForeignKey,
+    CheckConstraint,
+    UniqueConstraint,
+    Integer,
+    event,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 db = SQLAlchemy()
@@ -14,15 +22,31 @@ class User(db.Model):
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(
         String(120), unique=True, nullable=False)
-    password: Mapped[str] = mapped_column(nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean(), nullable=False)
 
-    def serialize(self):
-        return {
-            "id": self.id,
-            "email": self.email,
-            # do not serialize the password, its a security breach
-        }
+    def __repr__(self) -> str:
+        return f"<User id={self.id} email={self.email}>"
+
+    def serialize(self) -> dict:
+        return {"id": self.id, "email": self.email}
+
+
+@event.listens_for(User.__table__, "after_create")
+def insert_initial_user(target, connection, **kw):
+    connection.execute(
+        target.insert().values(
+            email="jose@canusee.com",
+        )
+    )
+
+
+def ensure_initial_user_if_empty() -> None:
+    """
+    Call once (inside an app context) after Alembic migrations.
+    Ensures a first user exists even if 'after_create' didn't run.
+    """
+    if db.session.query(User).count() == 0:
+        db.session.add(User(email="jose@canusee.com"))
+        db.session.commit()
 
 
 class Person(db.Model):
@@ -30,15 +54,28 @@ class Person(db.Model):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    mass: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    birth_year: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    hair_color: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    skin_color: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    eye_color: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    height: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    mass: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    birth_year: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True)
+    hair_color: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True)
+    skin_color: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True)
+    eye_color: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    gender: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
-    def serialize(self):
+    favorites: Mapped[list["Favorite"]] = relationship(
+        "Favorite",
+        back_populates="person",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    def __repr__(self) -> str:
+        return f"<Person id={self.id} name={self.name}>"
+
+    def serialize(self) -> dict:
         return {
             "id": self.id,
             "name": self.name,
@@ -51,26 +88,36 @@ class Person(db.Model):
             "gender": self.gender,
         }
 
-# -----------------------
-# Planet (updated types)
-# -----------------------
-
 
 class Planet(db.Model):
     __tablename__ = "planets"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    diameter: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    rotation_period: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    orbital_period: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    gravity: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    population: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    surface_water: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    climate: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    terrain: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
-    def serialize(self):
+    diameter: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    rotation_period: Mapped[Optional[int]
+                            ] = mapped_column(Integer, nullable=True)
+    orbital_period: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True)
+    gravity: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    population: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    surface_water: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True)
+    climate: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    terrain: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+
+    favorites: Mapped[list["Favorite"]] = relationship(
+        "Favorite",
+        back_populates="planet",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    def __repr__(self) -> str:
+        return f"<Planet id={self.id} name={self.name}>"
+
+    def serialize(self) -> dict:
         return {
             "id": self.id,
             "name": self.name,
@@ -85,9 +132,6 @@ class Planet(db.Model):
         }
 
 
-# -----------------------
-# Favorite (polymorphic to Person or Planet)
-# -----------------------
 FavoriteType = Literal["person", "planet"]
 
 
@@ -96,57 +140,58 @@ class Favorite(db.Model):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # who favorited it
-    user_id: Mapped[int] = mapped_column(ForeignKey(
-        "users.id", ondelete="CASCADE"), nullable=False)
-    user: Mapped["User"] = relationship(back_populates="favorites")
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
 
-    # what type of thing is favorited
-    item_type: Mapped[FavoriteType] = mapped_column(
-        Enum("person", "planet", name="favorite_type"), nullable=False)
+    item_type: Mapped[str] = mapped_column(String(10), nullable=False)
 
-    # target (exactly one must be non-null, matching item_type)
     person_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("people.id", ondelete="CASCADE"), nullable=True)
+        ForeignKey("people.id", ondelete="CASCADE"), nullable=True
+    )
     planet_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("planets.id", ondelete="CASCADE"), nullable=True)
+        ForeignKey("planets.id", ondelete="CASCADE"), nullable=True
+    )
 
-    person: Mapped[Optional["Person"]] = relationship()
-    planet: Mapped[Optional["Planet"]] = relationship()
+    person: Mapped[Optional["Person"]] = relationship(
+        "Person", back_populates="favorites")
+    planet: Mapped[Optional["Planet"]] = relationship(
+        "Planet", back_populates="favorites")
 
-    # ensure we don't save duplicates per user per item
+    user = relationship("User")
+
     __table_args__ = (
-        # only one of person_id / planet_id must be set
+
         CheckConstraint(
-            "(person_id IS NOT NULL AND planet_id IS NULL) OR "
-            "(person_id IS NULL AND planet_id IS NOT NULL)",
-            name="ck_favorites_exactly_one_target",
+            "( (person_id IS NOT NULL) <> (planet_id IS NOT NULL) )",
+            name="ck_favorite_one_target",
         ),
-        # item_type must match which FK is set
+
         CheckConstraint(
-            "(item_type = 'person' AND person_id IS NOT NULL AND planet_id IS NULL) OR "
-            "(item_type = 'planet' AND planet_id IS NOT NULL AND person_id IS NULL)",
-            name="ck_favorites_type_matches_target",
+            "(person_id IS NULL) OR (item_type = 'person')",
+            name="ck_favorite_type_person",
         ),
-        # prevent duplicates (user can't favorite the same item twice)
-        UniqueConstraint("user_id", "item_type", "person_id",
+        CheckConstraint(
+            "(planet_id IS NULL) OR (item_type = 'planet')",
+            name="ck_favorite_type_planet",
+        ),
+
+        UniqueConstraint("user_id", "person_id", "item_type",
                          name="uq_user_person_fav"),
-        UniqueConstraint("user_id", "item_type", "planet_id",
+        UniqueConstraint("user_id", "planet_id", "item_type",
                          name="uq_user_planet_fav"),
     )
 
-    def serialize(self):
-        base = {
-            "id": self.id,
-            "user_id": self.user_id,
-            "item_type": self.item_type,
-        }
+    def __repr__(self) -> str:
+        tgt = "person_id" if self.item_type == "person" else "planet_id"
+        val = self.person_id if self.item_type == "person" else self.planet_id
+        return f"<Favorite id={self.id} user_id={self.user_id} type={self.item_type} {tgt}={val}>"
+
+    def serialize(self) -> dict:
+        base = {"id": self.id, "user_id": self.user_id,
+                "item_type": self.item_type}
         if self.item_type == "person" and self.person:
             base["person"] = self.person.serialize()
         if self.item_type == "planet" and self.planet:
             base["planet"] = self.planet.serialize()
         return base
-
-    def __repr__(self) -> str:
-        target = f"person_id={self.person_id}" if self.item_type == "person" else f"planet_id={self.planet_id}"
-        return f"<Favorite id={self.id} user_id={self.user_id} type={self.item_type} {target}>"
