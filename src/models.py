@@ -4,14 +4,13 @@ from typing import Optional, Literal
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import (
     String,
-    Boolean,
     ForeignKey,
     CheckConstraint,
     UniqueConstraint,
     Integer,
-    event,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+import sqlalchemy as sa
 
 db = SQLAlchemy()
 
@@ -30,23 +29,29 @@ class User(db.Model):
         return {"id": self.id, "email": self.email}
 
 
-@event.listens_for(User.__table__, "after_create")
-def insert_initial_user(target, connection, **kw):
-    connection.execute(
-        target.insert().values(
-            email="jose@canusee.com",
-        )
-    )
-
-
 def ensure_initial_user_if_empty() -> None:
-    """
-    Call once (inside an app context) after Alembic migrations.
-    Ensures a first user exists even if 'after_create' didn't run.
-    """
-    if db.session.query(User).count() == 0:
-        db.session.add(User(email="jose@canusee.com"))
-        db.session.commit()
+    count = db.session.execute(sa.text("SELECT COUNT(*) FROM users")).scalar()
+    if count and int(count) > 0:
+        return
+
+    insp = sa.inspect(db.engine)
+    cols = {c["name"]: c for c in insp.get_columns("users")}
+
+    values = {"email": "jose@canusee.com"}
+    if "password" in cols:
+        nullable = bool(cols["password"].get("nullable", True))
+        if not nullable or "password" not in values:
+            values["password"] = "changeme"
+    if "is_active" in cols:
+        values["is_active"] = True
+    if "name" in cols:
+        values["name"] = "Jose"
+
+    col_list = ", ".join(values.keys())
+    placeholders = ", ".join(f":{k}" for k in values.keys())
+    db.session.execute(
+        sa.text(f"INSERT INTO users ({col_list}) VALUES ({placeholders})"), values)
+    db.session.commit()
 
 
 class Person(db.Model):
@@ -161,12 +166,10 @@ class Favorite(db.Model):
     user = relationship("User")
 
     __table_args__ = (
-
         CheckConstraint(
             "( (person_id IS NOT NULL) <> (planet_id IS NOT NULL) )",
             name="ck_favorite_one_target",
         ),
-
         CheckConstraint(
             "(person_id IS NULL) OR (item_type = 'person')",
             name="ck_favorite_type_person",
@@ -175,7 +178,6 @@ class Favorite(db.Model):
             "(planet_id IS NULL) OR (item_type = 'planet')",
             name="ck_favorite_type_planet",
         ),
-
         UniqueConstraint("user_id", "person_id", "item_type",
                          name="uq_user_person_fav"),
         UniqueConstraint("user_id", "planet_id", "item_type",

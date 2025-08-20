@@ -28,9 +28,7 @@ setup_admin(app)
 with app.app_context():
     insp = inspect(db.engine)
     if "users" in insp.get_table_names():
-        cols = {c["name"] for c in insp.get_columns("users")}
-        if "email" in cols:
-            ensure_initial_user_if_empty()
+        ensure_initial_user_if_empty()
 
 
 @app.errorhandler(APIException)
@@ -130,7 +128,7 @@ def delete_person(people_id: int):
     if not person:
         raise APIException(
             f"Person with id={people_id} not found", status_code=404)
-    db.session.delete(person)  # cascades remove favorites
+    db.session.delete(person)
     db.session.commit()
     return jsonify({"msg": "Person deleted"}), 200
 
